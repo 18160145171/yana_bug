@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>质量验收与缺陷分析报告生成器</title>
+    <style>
+        body { margin: 0; font-family: "Microsoft YaHei", sans-serif; background: #f4f6fa; color: #333; }
+        .wrap { max-width: 980px; margin: 40px auto; background: #fff; border-radius: 12px; box-shadow: 0 6px 24px rgba(0,0,0,0.08); overflow: hidden; }
+        .header { background: #2f80ed; color: #fff; padding: 22px 28px; font-size: 28px; font-weight: 700; }
+        .content { padding: 28px; }
+        .row { margin-bottom: 16px; }
+        label { display: block; font-weight: 600; margin-bottom: 8px; }
+        input[type="text"], input[type="password"], input[type="file"] {
+            width: 100%; box-sizing: border-box; padding: 12px;
+            border: 1px solid #d9dfe8; border-radius: 8px; font-size: 14px; background: #fff;
+        }
+        input[type="checkbox"] { transform: scale(1.1); margin-right: 6px; }
+        .row-inline { display: flex; align-items: center; gap: 8px; }
+        .ai-box { border: 1px dashed #d9dfe8; border-radius: 8px; padding: 12px; background: #fafcff; }
+        .hint { font-size: 12px; color: #888; margin-top: 6px; }
+        .btn {
+            margin-top: 8px; width: 100%; border: 0; border-radius: 8px; padding: 12px 16px;
+            font-size: 16px; font-weight: 700; cursor: pointer; background: #ff4d4f; color: #fff;
+        }
+        .btn:hover { background: #f5222d; }
+        .msg { margin-top: 18px; padding: 12px 14px; border-radius: 8px; font-size: 14px; }
+        .ok { background: #f6ffed; border: 1px solid #b7eb8f; color: #389e0d; }
+        .err { background: #fff1f0; border: 1px solid #ffa39e; color: #cf1322; }
+        .download {
+            display: inline-block; margin-top: 10px; text-decoration: none; color: #2f80ed; font-weight: 600;
+        }
+        .path { margin-top: 6px; font-size: 12px; color: #666; word-break: break-all; }
+        .hidden { display: none; }
+        .ver { margin-top: 10px; font-size: 12px; color: #999; }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <div class="header">质量验收与缺陷分析报告生成器（非测试用例）</div>
+        <div class="content">
+            <div class="row">
+                <label for="project_name">项目名称</label>
+                <input id="project_name" name="project_name" type="text" placeholder="例如：视频编辑器App">
+            </div>
+            <div class="row">
+                <label for="bug_file">上传 Bug 文档（CSV/Excel）</label>
+                <input id="bug_file" name="bug_file" type="file" accept=".csv,.xlsx,.xls">
+                <div id="file-name" class="hint">未选择文件</div>
+                <div class="hint">支持字段：标题、任务ID、执行者、父任务、任务状态、优先级（可部分缺省）</div>
+            </div>
+            <div class="row ai-box">
+                <div class="row-inline">
+                    <input id="use_ai" name="use_ai" type="checkbox">
+                    <label for="use_ai" style="margin: 0;">启用 AI 增强分析（可选）</label>
+                </div>
+                <div class="hint">启用后会调用你填写的 OpenAI 兼容接口，为报告补充发布建议和风险分析。</div>
+                <div id="ai-config" class="hidden" style="margin-top: 10px;">
+                    <div class="row">
+                        <label for="api_base_url">API Base URL</label>
+                        <input id="api_base_url" name="api_base_url" type="text" placeholder="例如：https://api.openai.com/v1">
+                    </div>
+                    <div class="row">
+                        <label for="api_key">API Key</label>
+                        <input id="api_key" name="api_key" type="password" placeholder="请输入你的 API Key">
+                    </div>
+                    <div class="row" style="margin-bottom: 0;">
+                        <label for="model_name">模型名称</label>
+                        <input id="model_name" name="model_name" type="text" placeholder="例如：gpt-4.1 / glm-4-plus">
+                        <div class="hint">智谱推荐填写：glm-4-plus（填写“智谱”也会自动映射）。</div>
+                    </div>
+                </div>
+            </div>
+            <button id="submit-btn" class="btn" type="button">生成质量验收报告（.doc）</button>
+            <div class="ver">版本：{{ app_version }}</div>
+
+            <div id="ok-msg" class="msg ok hidden"></div>
+            <div id="err-msg" class="msg err hidden"></div>
+            <a id="download-link" class="download hidden" href="#">点击下载报告（.doc）</a>
+            <div id="output-path" class="path hidden"></div>
+        </div>
+    </div>
+    <script>
+        const fileInput = document.getElementById("bug_file");
+        const projectNameInput = document.getElementById("project_name");
+        const fileName = document.getElementById("file-name");
+        const useAiInput = document.getElementById("use_ai");
+        const aiConfig = document.getElementById("ai-config");
+        const apiBaseUrlInput = document.getElementById("api_base_url");
+        const apiKeyInput = document.getElementById("api_key");
+        const modelNameInput = document.getElementById("model_name");
+        const submitBtn = document.getElementById("submit-btn");
+        const okMsg = document.getElementById("ok-msg");
+        const errMsg = document.getElementById("err-msg");
+        const downloadLink = document.getElementById("download-link");
+        const outputPath = document.getElementById("output-path");
+
+        function hideResult() {
+            okMsg.classList.add("hidden");
+            errMsg.classList.add("hidden");
+            downloadLink.classList.add("hidden");
+            outputPath.classList.add("hidden");
+        }
+
+        fileInput.addEventListener("change", () => {
+            const file = fileInput.files && fileInput.files[0];
+            fileName.textContent = file ? `已选择：${file.name}` : "未选择文件";
+        });
+
+        useAiInput.addEventListener("change", () => {
+            aiConfig.classList.toggle("hidden", !useAiInput.checked);
+        });
+
+        submitBtn.addEventListener("click", async () => {
+            hideResult();
+
+            const file = fileInput.files && fileInput.files[0];
+            if (!file) {
+                errMsg.textContent = "请选择要上传的 Bug 文档（CSV/Excel）。";
+                errMsg.classList.remove("hidden");
+                return;
+            }
+
+            submitBtn.disabled = true;
+            const originalText = submitBtn.textContent;
+            submitBtn.textContent = "生成中，请稍候...";
+
+            try {
+                const formData = new FormData();
+                formData.append("bug_file", file);
+                formData.append("project_name", projectNameInput.value || "");
+                formData.append("use_ai", useAiInput.checked ? "1" : "0");
+                formData.append("api_base_url", apiBaseUrlInput.value || "");
+                formData.append("api_key", apiKeyInput.value || "");
+                formData.append("model_name", modelNameInput.value || "");
+                const resp = await fetch("/api/generate", {
+                    method: "POST",
+                    body: formData
+                });
+                const data = await resp.json();
+
+                if (!resp.ok || !data.ok) {
+                    errMsg.textContent = data.error || "生成失败，请检查文档格式。";
+                    errMsg.classList.remove("hidden");
+                    return;
+                }
+
+                okMsg.textContent = data.message || "报告生成成功。";
+                okMsg.classList.remove("hidden");
+
+                downloadLink.href = data.download_link;
+                downloadLink.classList.remove("hidden");
+
+                outputPath.textContent = `文件已保存：${data.output_path}`;
+                outputPath.classList.remove("hidden");
+            } catch (err) {
+                errMsg.textContent = "网络异常或服务未启动，请稍后重试。";
+                errMsg.classList.remove("hidden");
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.textContent = originalText;
+            }
+        });
+    </script>
+</body>
+</html>
