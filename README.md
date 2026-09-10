@@ -45,6 +45,28 @@
    ```
 4. 在弹窗中选择 Bug 文档并输入项目名，即可自动生成报告。
 
+## 网页版
+
+本地 Flask 版：
+
+```bash
+python app_web.py
+```
+
+打开 `http://127.0.0.1:8512` 使用。
+
+Streamlit 版：
+
+```bash
+streamlit run streamlit_app.py
+```
+
+Streamlit Community Cloud 部署参数：
+
+- Repository: `18160145171/yana_bug`
+- Branch: `main`
+- Main file path: `streamlit_app.py`
+
 ## 备注
 - CSV 建议使用 `UTF-8 with BOM` 编码，避免中文乱码。
 - 样式已按 Word 兼容方式输出（用于 `.doc` 打开）。
