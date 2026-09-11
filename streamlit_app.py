@@ -14,7 +14,7 @@ BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_DIR = BASE_DIR / "uploads"
 OUTPUT_DIR = BASE_DIR / "outputs"
 ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xls"}
-APP_VERSION = "2026.09.11-streamlit-prompt"
+APP_VERSION = "2026.09.11-streamlit-ai-strict"
 
 
 def safe_filename(filename):
@@ -72,6 +72,7 @@ api_key = ""
 model_name = ""
 report_prompt = DEFAULT_REPORT_PROMPT
 if use_ai:
+    st.info("AI 模式已开启：生成时必须成功调用模型接口；接口失败不会回退生成固定模板报告。")
     api_base_url = st.text_input("API Base URL", placeholder="例如：https://api.openai.com/v1")
     api_key = st.text_input("API Key", type="password")
     model_name = st.text_input("模型名称", placeholder="例如：gpt-4.1 / glm-4-plus")
@@ -102,7 +103,8 @@ if submitted:
                 "report_prompt": report_prompt.strip() or DEFAULT_REPORT_PROMPT,
             }
 
-        with st.spinner("正在生成报告..."):
+        progress_text = "正在调用 AI 接口并生成报告..." if use_ai else "正在生成报告..."
+        with st.spinner(progress_text):
             try:
                 output_name, output_path, rendered = generate_report(
                     uploaded_file=bug_file,
@@ -112,7 +114,7 @@ if submitted:
             except Exception as exc:  # pylint: disable=broad-except
                 st.error(f"生成失败：{exc}")
             else:
-                st.success("报告生成成功。")
+                st.success("报告生成成功，AI 接口调用成功。")
                 st.download_button(
                     label="下载报告（.doc）",
                     data=rendered.encode("utf-8"),

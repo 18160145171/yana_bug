@@ -13,7 +13,7 @@ BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_DIR = BASE_DIR / "uploads"
 OUTPUT_DIR = BASE_DIR / "outputs"
 ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xls"}
-APP_VERSION = "2026.09.11-prompt"
+APP_VERSION = "2026.09.11-ai-strict"
 
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -90,7 +90,7 @@ def api_generate():
         return jsonify(
             {
                 "ok": True,
-                "message": "报告生成成功（已启用 AI 增强分析）。" if use_ai else "报告生成成功。",
+                "message": "报告生成成功，AI 接口调用成功。" if use_ai else "报告生成成功。",
                 "download_link": url_for("download_file", filename=out_name),
                 "output_path": str(out_path),
             }

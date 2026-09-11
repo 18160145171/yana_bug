@@ -362,6 +362,8 @@ def build_ai_insight(project_name, total, resolved_count, high_count, module_ana
                 "executive_summary, key_risks(数组), release_decision, actions(数组)。"
                 "其中 release_decision 只能是 GO / NO-GO / CONDITIONAL-GO。"
                 "每个 action 最多 30 字。不得输出 JSON 以外的内容。"
+                "这些字段会直接写入报告的风险结论、发布建议和改进措施，"
+                "请按报告生成规则重新判断，不要照抄固定模板，也不要补写输入数据中不存在的事实。"
                 "以下是本次上传文件经过字段标准化后的统计和 Bug 明细；"
                 "如果 bug_rows_truncated 为 true，说明明细过多，仅展示优先级更高或未关闭的前 500 条，"
                 "请结合总数和统计字段进行判断：\n"
@@ -382,38 +384,40 @@ def build_ai_insight(project_name, total, resolved_count, high_count, module_ana
         cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
         cleaned = re.sub(r"\s*```$", "", cleaned)
 
-    result = json.loads(cleaned)
+    try:
+        result = json.loads(cleaned)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"模型返回不是合法 JSON：{cleaned[:500]}") from exc
+    if not isinstance(result, dict):
+        raise RuntimeError("模型返回格式异常：顶层结果必须是 JSON 对象。")
+
+    required_fields = {"executive_summary", "key_risks", "release_decision", "actions"}
+    missing_fields = sorted(required_fields - set(result))
+    if missing_fields:
+        raise RuntimeError(f"模型返回缺少字段：{', '.join(missing_fields)}")
+
     summary = normalize_text(result.get("executive_summary"))
     decision = normalize_text(result.get("release_decision")).upper()
     risks = result.get("key_risks", [])
     actions = result.get("actions", [])
 
     if decision not in {"GO", "NO-GO", "CONDITIONAL-GO"}:
-        decision = "CONDITIONAL-GO"
-
+        raise RuntimeError(
+            "模型返回的 release_decision 无效，必须是 GO / NO-GO / CONDITIONAL-GO。"
+        )
+    if not summary:
+        raise RuntimeError("模型返回的 executive_summary 为空。")
     if not isinstance(risks, list):
-        risks = []
+        raise RuntimeError("模型返回的 key_risks 必须是数组。")
     if not isinstance(actions, list):
-        actions = []
+        raise RuntimeError("模型返回的 actions 必须是数组。")
 
-    risk_lines = "".join([f"<li>{html.escape(normalize_text(r))}</li>" for r in risks if normalize_text(r)])
-    action_lines = "".join([f"<li>{html.escape(normalize_text(a))}</li>" for a in actions if normalize_text(a)])
-    if not risk_lines:
-        risk_lines = "<li>暂无模型返回风险项。</li>"
-    if not action_lines:
-        action_lines = "<li>暂无模型返回行动项。</li>"
-
-    return (
-        "<h2>五、 AI 增强洞察（可选）</h2>"
-        f"<div class='summary-box'><b>发布建议：</b>{html.escape(decision)}<br>"
-        f"<b>结论摘要：</b>{html.escape(summary or '无')}</div>"
-        "<div><b>关键风险：</b><ul>"
-        f"{risk_lines}"
-        "</ul></div>"
-        "<div><b>行动建议：</b><ul>"
-        f"{action_lines}"
-        "</ul></div>"
-    )
+    return {
+        "summary": summary,
+        "decision": decision,
+        "risks": [normalize_text(r) for r in risks if normalize_text(r)],
+        "actions": [normalize_text(a) for a in actions if normalize_text(a)],
+    }
 
 
 def build_html(project_name, rows, llm_config=None):
@@ -529,10 +533,11 @@ def build_html(project_name, rows, llm_config=None):
     if not appendix_rows_html:
         appendix_rows_html = "<tr><td colspan='6'>暂无缺陷数据</td></tr>"
 
-    ai_section_html = ""
+    ai_analysis = None
     if llm_config and llm_config.get("enabled"):
+        # AI 模式必须真实完成接口调用并解析模型结果，失败时不生成模板报告。
         try:
-            ai_section_html = build_ai_insight(
+            ai_analysis = build_ai_insight(
                 project_name=project_name,
                 total=total,
                 resolved_count=resolved_count,
@@ -544,10 +549,54 @@ def build_html(project_name, rows, llm_config=None):
                 llm_config=llm_config,
             )
         except Exception as exc:  # pylint: disable=broad-except
-            ai_section_html = (
-                "<h2>五、 AI 增强洞察（可选）</h2>"
-                f"<div class='risk-box'>AI 增强调用失败，已回退为规则模板输出。原因：{html.escape(str(exc))}</div>"
+            raise RuntimeError(f"AI 增强调用失败，报告未生成：{exc}") from exc
+
+    module_interpretation_html = (
+        "<div class='summary-box'>"
+        f"Top1模块：<b>{html.escape(top1_module)}</b>；"
+        f"动态深度解读：该模块问题主要表现为 <b>{html.escape(top1_nature)}</b>。"
+        "</div>"
+    )
+    ai_section_html = ""
+    if ai_analysis:
+        ai_risks = ai_analysis["risks"] or ["模型未识别出需要单独列出的关键风险。"]
+        ai_actions = ai_analysis["actions"] or ["模型未返回后续行动，请根据数据继续确认。"]
+        risk_lines = "".join(
+            f"<li>{html.escape(item)}</li>" for item in ai_risks
+        )
+        action_lines = "".join(
+            f"<li>{html.escape(item)}</li>" for item in ai_actions
+        )
+
+        # AI 成功后，报告叙述部分直接使用模型结果，不再展示固定模板结论。
+        top_risk = (
+            "<div class='summary-box'>"
+            f"<b>AI发布建议：</b>{html.escape(ai_analysis['decision'])}<br>"
+            f"<b>AI结论摘要：</b>{html.escape(ai_analysis['summary'])}"
+            "</div>"
+            "<div class='risk-box'><b>AI关键风险：</b><ul>"
+            f"{risk_lines}</ul></div>"
+        )
+        module_interpretation_html = (
+            "<div class='summary-box'>"
+            "<b>AI重新分析结论：</b>"
+            f"{html.escape(ai_analysis['summary'])}"
+            "</div>"
+        )
+        improvements_html = "".join(
+            (
+                "<div class='improvement-item'>"
+                f"<span class='improvement-title'>AI行动建议 {idx}</span>"
+                f"<span>{html.escape(action)}</span>"
+                "</div>"
             )
+            for idx, action in enumerate(ai_actions, start=1)
+        )
+        ai_section_html = (
+            "<h2>五、 AI 接口分析结果</h2>"
+            "<div><b>模型返回的后续行动：</b><ul>"
+            f"{action_lines}</ul></div>"
+        )
 
     html_doc = f"""<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>
 <head>
@@ -586,10 +635,7 @@ def build_html(project_name, rows, llm_config=None):
         </tr>
         {module_rows_html}
     </table>
-    <div class="summary-box">
-        Top1模块：<b>{html.escape(top1_module)}</b>；
-        动态深度解读：该模块问题主要表现为 <b>{top1_nature}</b>。
-    </div>
+    {module_interpretation_html}
 
     <h2>三、 改进措施</h2>
     <div>
