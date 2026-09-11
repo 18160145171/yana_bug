@@ -7,14 +7,14 @@ from pathlib import Path
 
 import streamlit as st
 
-from generate_bug_report import build_html, load_rows, validate_columns
+from generate_bug_report import DEFAULT_REPORT_PROMPT, build_html, load_rows, validate_columns
 
 
 BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_DIR = BASE_DIR / "uploads"
 OUTPUT_DIR = BASE_DIR / "outputs"
 ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xls"}
-APP_VERSION = "2026.09.11-streamlit"
+APP_VERSION = "2026.09.11-streamlit-prompt"
 
 
 def safe_filename(filename):
@@ -70,10 +70,18 @@ use_ai = st.toggle("启用 AI 增强分析", value=False)
 api_base_url = ""
 api_key = ""
 model_name = ""
+report_prompt = DEFAULT_REPORT_PROMPT
 if use_ai:
     api_base_url = st.text_input("API Base URL", placeholder="例如：https://api.openai.com/v1")
     api_key = st.text_input("API Key", type="password")
     model_name = st.text_input("模型名称", placeholder="例如：gpt-4.1 / glm-4-plus")
+    st.subheader("报告生成规则")
+    report_prompt = st.text_area(
+        "可编辑提示词",
+        value=DEFAULT_REPORT_PROMPT,
+        height=190,
+        help="每次启用 AI 生成报告时，模型都会根据这段规则重新分析上传的 Bug 数据。留空时使用推荐规则。",
+    )
 
 with st.form("report-form"):
     submitted = st.form_submit_button("生成质量验收报告")
@@ -91,6 +99,7 @@ if submitted:
                 "api_base_url": api_base_url.strip(),
                 "api_key": api_key.strip(),
                 "model_name": model_name.strip(),
+                "report_prompt": report_prompt.strip() or DEFAULT_REPORT_PROMPT,
             }
 
         with st.spinner("正在生成报告..."):

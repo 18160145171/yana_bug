@@ -7,13 +7,13 @@ from pathlib import Path
 from flask import Flask, jsonify, redirect, render_template, request, send_file, url_for
 from werkzeug.utils import secure_filename
 
-from generate_bug_report import build_html, load_rows, validate_columns
+from generate_bug_report import DEFAULT_REPORT_PROMPT, build_html, load_rows, validate_columns
 
 BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_DIR = BASE_DIR / "uploads"
 OUTPUT_DIR = BASE_DIR / "outputs"
 ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xls"}
-APP_VERSION = "2026.04.01-r3"
+APP_VERSION = "2026.09.11-prompt"
 
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -34,7 +34,11 @@ def allowed_file(filename):
 
 @app.route("/", methods=["GET", "POST"])
 def index():
-    return render_template("index.html", app_version=APP_VERSION)
+    return render_template(
+        "index.html",
+        app_version=APP_VERSION,
+        default_report_prompt=DEFAULT_REPORT_PROMPT,
+    )
 
 
 @app.route("/api/generate", methods=["POST"])
@@ -45,6 +49,7 @@ def api_generate():
     api_base_url = (request.form.get("api_base_url") or "").strip()
     api_key = (request.form.get("api_key") or "").strip()
     model_name = (request.form.get("model_name") or "").strip()
+    report_prompt = (request.form.get("report_prompt") or "").strip() or DEFAULT_REPORT_PROMPT
 
     if not file or not file.filename:
         return jsonify({"ok": False, "error": "请选择要上传的 Bug 文档（CSV/Excel）。"}), 400
@@ -74,6 +79,7 @@ def api_generate():
                 "api_base_url": api_base_url,
                 "api_key": api_key,
                 "model_name": model_name,
+                "report_prompt": report_prompt,
             }
         rendered = build_html(project_name, rows, llm_config=llm_config)
 

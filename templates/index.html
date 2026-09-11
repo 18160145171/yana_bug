@@ -15,6 +15,11 @@
             width: 100%; box-sizing: border-box; padding: 12px;
             border: 1px solid #d9dfe8; border-radius: 8px; font-size: 14px; background: #fff;
         }
+        textarea {
+            width: 100%; box-sizing: border-box; padding: 12px;
+            border: 1px solid #d9dfe8; border-radius: 8px; font-size: 14px;
+            line-height: 1.6; resize: vertical; font-family: inherit; background: #fff;
+        }
         input[type="checkbox"] { transform: scale(1.1); margin-right: 6px; }
         .row-inline { display: flex; align-items: center; gap: 8px; }
         .ai-box { border: 1px dashed #d9dfe8; border-radius: 8px; padding: 12px; background: #fafcff; }
@@ -69,6 +74,11 @@
                         <input id="model_name" name="model_name" type="text" placeholder="例如：gpt-4.1 / glm-4-plus">
                         <div class="hint">智谱推荐填写：glm-4-plus（填写“智谱”也会自动映射）。</div>
                     </div>
+                    <div class="row" style="margin-top: 16px; margin-bottom: 0;">
+                        <label for="report_prompt">报告生成规则提示词</label>
+                        <textarea id="report_prompt" name="report_prompt" rows="8" placeholder="请输入本次报告的分析规则">{{ default_report_prompt }}</textarea>
+                        <div class="hint">每次启用 AI 生成报告时，模型会根据此规则重新分析本次上传的 Bug 数据。</div>
+                    </div>
                 </div>
             </div>
             <button id="submit-btn" class="btn" type="button">生成质量验收报告（.doc）</button>
@@ -89,6 +99,7 @@
         const apiBaseUrlInput = document.getElementById("api_base_url");
         const apiKeyInput = document.getElementById("api_key");
         const modelNameInput = document.getElementById("model_name");
+        const reportPromptInput = document.getElementById("report_prompt");
         const submitBtn = document.getElementById("submit-btn");
         const okMsg = document.getElementById("ok-msg");
         const errMsg = document.getElementById("err-msg");
@@ -133,6 +144,7 @@
                 formData.append("api_base_url", apiBaseUrlInput.value || "");
                 formData.append("api_key", apiKeyInput.value || "");
                 formData.append("model_name", modelNameInput.value || "");
+                formData.append("report_prompt", reportPromptInput.value || "");
                 const resp = await fetch("/api/generate", {
                     method: "POST",
                     body: formData

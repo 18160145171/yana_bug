@@ -37,6 +37,13 @@ STATUS_INDEX = {status: idx for idx, status in enumerate(ALL_STATUS_ORDER)}
 
 HIGH_PRIORITY_KEYWORDS = ["高", "紧急", "严重", "critical", "p0", "p1", "blocker"]
 UI_KEYWORDS = ["ui", "页面", "显示", "样式", "布局", "交互", "按钮", "弹窗", "对齐", "颜色", "字体"]
+MODEL_MAX_ROWS = 500
+
+DEFAULT_REPORT_PROMPT = """请以优秀测试软件工程师和测试经理的视角，重新分析输入的 Bug 数据，生成正式、客观、简洁、可执行的质量验收与缺陷分析结论。
+严格以输入数据为依据，不臆造版本、环境、复现步骤、责任人或修复状态；输入缺失的信息请明确标注“数据未提供”。
+重点分析 Bug 总量、有效记录、优先级分布、功能模块分布、执行人分布、任务状态、已解决率、未关闭问题和高优先级未闭环问题。
+识别缺陷集中模块、发布风险、数据质量问题（例如标题不完整、状态与优先级异常或关键信息缺失），并给出有依据的发布建议和后续行动。
+结论要说明判断依据；行动建议要具体到责任角色、优先级或验证动作。请使用中文。"""
 
 MODULE_RULES = [
     ("去水印/去字幕", ["去水印", "去字幕", "logo"]),
@@ -317,6 +324,7 @@ def build_ai_insight(project_name, total, resolved_count, high_count, module_ana
         for item in module_analysis[:8]
     ]
 
+    model_rows = sort_rows_for_appendix(rows)[:MODEL_MAX_ROWS]
     context = {
         "project_name": project_name,
         "total_bug_count": total,
@@ -328,23 +336,35 @@ def build_ai_insight(project_name, total, resolved_count, high_count, module_ana
         "top1_issue_nature": top1_nature,
         "module_stats": module_stats,
         "sample_unresolved_bugs": unresolved,
+        "bug_rows": model_rows,
+        "bug_rows_total": total,
+        "bug_rows_included": len(model_rows),
+        "bug_rows_truncated": total > len(model_rows),
     }
 
+    report_prompt = normalize_text(llm_config.get("report_prompt")) or DEFAULT_REPORT_PROMPT
     messages = [
         {
             "role": "system",
             "content": (
-                "你是资深测试经理。请基于输入的缺陷统计，生成简洁、可执行的发布评估。"
+                "你是优秀测试软件工程师和资深测试经理。"
+                "请根据用户提供的报告生成规则，重新分析 Bug 明细和统计信息，生成客观、可执行的发布评估。"
                 "只输出 JSON，不要输出 Markdown 代码块。"
             ),
         },
         {
             "role": "user",
             "content": (
+                "【报告生成规则提示词】\n"
+                f"{report_prompt}\n\n"
+                "【输出格式约束】\n"
                 "请严格返回 JSON 对象，字段必须包含："
                 "executive_summary, key_risks(数组), release_decision, actions(数组)。"
                 "其中 release_decision 只能是 GO / NO-GO / CONDITIONAL-GO。"
-                "每个 action 最多 30 字。数据如下：\n"
+                "每个 action 最多 30 字。不得输出 JSON 以外的内容。"
+                "以下是本次上传文件经过字段标准化后的统计和 Bug 明细；"
+                "如果 bug_rows_truncated 为 true，说明明细过多，仅展示优先级更高或未关闭的前 500 条，"
+                "请结合总数和统计字段进行判断：\n"
                 + json.dumps(context, ensure_ascii=False)
             ),
         },
