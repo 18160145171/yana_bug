@@ -12,5 +12,6 @@ outputs/*
 # Local editor and OS metadata.
 .vscode/
 .idea/
+.playwright-mcp/
 .DS_Store
 Thumbs.db

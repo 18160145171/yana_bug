@@ -14,7 +14,7 @@ BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_DIR = BASE_DIR / "uploads"
 OUTPUT_DIR = BASE_DIR / "outputs"
 ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xls"}
-APP_VERSION = "2026.09.10-streamlit"
+APP_VERSION = "2026.09.11-streamlit"
 
 
 def safe_filename(filename):
@@ -59,19 +59,23 @@ st.set_page_config(
 st.title("质量验收与缺陷分析报告生成器")
 st.caption(f"版本：{APP_VERSION}")
 
+project_name = st.text_input("项目名称", placeholder="例如：视频编辑器App")
+bug_file = st.file_uploader(
+    "上传 Bug 文档",
+    type=["csv", "xlsx", "xls"],
+    accept_multiple_files=False,
+)
+use_ai = st.toggle("启用 AI 增强分析", value=False)
+
+api_base_url = ""
+api_key = ""
+model_name = ""
+if use_ai:
+    api_base_url = st.text_input("API Base URL", placeholder="例如：https://api.openai.com/v1")
+    api_key = st.text_input("API Key", type="password")
+    model_name = st.text_input("模型名称", placeholder="例如：gpt-4.1 / glm-4-plus")
+
 with st.form("report-form"):
-    project_name = st.text_input("项目名称", placeholder="例如：视频编辑器App")
-    bug_file = st.file_uploader("上传 Bug 文档", type=["csv", "xlsx", "xls"])
-    use_ai = st.toggle("启用 AI 增强分析", value=False)
-
-    api_base_url = ""
-    api_key = ""
-    model_name = ""
-    if use_ai:
-        api_base_url = st.text_input("API Base URL", placeholder="例如：https://api.openai.com/v1")
-        api_key = st.text_input("API Key", type="password")
-        model_name = st.text_input("模型名称", placeholder="例如：gpt-4.1 / glm-4-plus")
-
     submitted = st.form_submit_button("生成质量验收报告")
 
 if submitted:
