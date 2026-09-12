@@ -26,7 +26,7 @@ BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_DIR = BASE_DIR / "uploads"
 OUTPUT_DIR = BASE_DIR / "outputs"
 ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xls"}
-APP_VERSION = "2026.09.12-streamlit-responses-r2"
+APP_VERSION = "2026.09.12-streamlit-waf-fix-r4"
 
 
 def safe_filename(filename):
@@ -99,7 +99,8 @@ if use_ai:
     )
     st.caption(
         "5spiritual 示例：接口地址 `https://5spiritual.com`，"
-        "接口端点 `/v1/responses`，模型标识 `openai/gpt-5.5`。"
+        "接口端点 `/v1/chat/completions`，模型标识 `openai/gpt-5.5`。"
+        "如果仍填写 `/v1/responses` 且服务端返回 Cloudflare 1010，系统会自动切换兼容端点。"
     )
     st.subheader("报告生成规则")
     report_prompt = st.text_area(

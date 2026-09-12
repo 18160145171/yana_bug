@@ -39,7 +39,7 @@ STATUS_INDEX = {status: idx for idx, status in enumerate(ALL_STATUS_ORDER)}
 HIGH_PRIORITY_KEYWORDS = ["高", "紧急", "严重", "critical", "p0", "p1", "blocker"]
 UI_KEYWORDS = ["ui", "页面", "显示", "样式", "布局", "交互", "按钮", "弹窗", "对齐", "颜色", "字体"]
 MODEL_MAX_ROWS = 500
-DEFAULT_API_ENDPOINT = "/v1/responses"
+DEFAULT_API_ENDPOINT = "/v1/chat/completions"
 
 DEFAULT_REPORT_PROMPT = """请以优秀测试软件工程师和测试经理的视角，重新分析输入的 Bug 数据，生成正式、客观、简洁、可执行的质量验收与缺陷分析结论。
 严格以输入数据为依据，不臆造版本、环境、复现步骤、责任人或修复状态；输入缺失的信息请明确标注“数据未提供”。
@@ -252,6 +252,26 @@ def _is_responses_endpoint(endpoint):
     return path.endswith("/responses")
 
 
+def _alternate_compatible_endpoint(endpoint):
+    parsed = urllib.parse.urlsplit(endpoint)
+    path = parsed.path.rstrip("/")
+    if not path.lower().endswith("/responses"):
+        return ""
+    alternate_path = f"{path[:-len('/responses')]}/chat/completions"
+    return urllib.parse.urlunsplit(
+        (parsed.scheme, parsed.netloc, alternate_path, parsed.query, parsed.fragment)
+    )
+
+
+def _is_cloudflare_1010(detail):
+    lowered = normalize_text(detail).lower()
+    return "1010" in lowered and (
+        "cloudflare" in lowered
+        or "error code" in lowered
+        or "error 1010" in lowered
+    )
+
+
 def _messages_to_responses_input(messages):
     return [
         {
@@ -308,6 +328,83 @@ def _extract_response_text(data):
     raise RuntimeError(f"模型返回格式异常：未找到文本内容。原始返回：{json.dumps(data, ensure_ascii=False)[:500]}")
 
 
+class _ApiEndpointError(RuntimeError):
+    def __init__(self, status_code, endpoint, detail):
+        self.status_code = status_code
+        self.endpoint = endpoint
+        self.detail = detail
+        super().__init__(self._build_message())
+
+    def _build_message(self):
+        if self.status_code == 401:
+            return (
+                "模型接口返回 401（鉴权失败）。请检查："
+                "1) API Key 是否有效且完整；"
+                f"2) 接口地址是否正确（当前请求：{self.endpoint}）；"
+                "3) 模型标识是否与服务商配置一致。"
+                f" 原始返回：{self.detail[:300]}"
+            )
+        if self.status_code == 403:
+            return (
+                f"模型接口返回 403（服务端拒绝请求），当前请求地址：{self.endpoint}。"
+                "请检查接口端点是否被服务商或 Cloudflare/WAF 拦截。"
+                f" 原始返回：{self.detail[:500]}"
+            )
+        return (
+            f"模型接口错误 HTTP {self.status_code}，"
+            f"当前请求地址：{self.endpoint}：{self.detail[:500]}"
+        )
+
+
+def _request_openai_compatible_endpoint(
+    endpoint,
+    api_key,
+    model_name,
+    messages,
+    timeout_sec,
+):
+    if _is_responses_endpoint(endpoint):
+        payload = {
+            "model": model_name,
+            "input": _messages_to_responses_input(messages),
+        }
+    else:
+        payload = {
+            "model": model_name,
+            "messages": messages,
+            "temperature": 0.3,
+        }
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(
+        endpoint,
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Authorization": f"Bearer {api_key}",
+            # Some OpenAI-compatible gateways reject Python-urllib's default signature at the WAF layer.
+            "User-Agent": "OpenAI/Python",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise _ApiEndpointError(exc.code, endpoint, detail) from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"模型接口连接失败（{endpoint}）：{exc.reason}") from exc
+
+    try:
+        data = json.loads(raw)
+        return _extract_response_text(data)
+    except Exception as exc:  # pylint: disable=broad-except
+        if isinstance(exc, RuntimeError):
+            raise
+        raise RuntimeError(f"模型返回格式异常: {raw[:500]}") from exc
+
+
 def call_openai_compatible_chat(
     api_base_url,
     api_key,
@@ -336,62 +433,37 @@ def call_openai_compatible_chat(
                 "通常应为 'id.secret' 形式，请从智谱控制台重新复制。"
             )
 
-    if _is_responses_endpoint(endpoint):
-        payload = {
-            "model": normalized_model,
-            "input": _messages_to_responses_input(messages),
-        }
-    else:
-        payload = {
-            "model": normalized_model,
-            "messages": messages,
-            "temperature": 0.3,
-        }
-    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request(
-        endpoint,
-        data=body,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        },
-        method="POST",
-    )
     try:
-        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
-            raw = resp.read().decode("utf-8", errors="replace")
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        if exc.code == 401:
-            raise RuntimeError(
-                "模型接口返回 401（鉴权失败）。请检查："
-                "1) API Key 是否有效且完整；"
-                f"2) 接口地址是否正确（当前请求：{endpoint}）；"
-                "3) 模型标识是否与服务商配置一致。"
-                f" 原始返回：{detail[:300]}"
-            ) from exc
-        if exc.code == 403:
-            raise RuntimeError(
-                f"模型接口返回 403（服务端拒绝请求），当前请求地址：{endpoint}。"
-                "请核对 API Key、接口端点和模型标识；"
-                "5spiritual 示例配置为：Base URL=https://5spiritual.com，"
-                "接口端点=/v1/responses，模型标识=openai/gpt-5.5。"
-                f" 原始返回：{detail[:500]}"
-            ) from exc
-        raise RuntimeError(
-            f"模型接口错误 HTTP {exc.code}，当前请求地址：{endpoint}：{detail[:500]}"
-        ) from exc
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"模型接口连接失败（{endpoint}）：{exc.reason}") from exc
+        return _request_openai_compatible_endpoint(
+            endpoint=endpoint,
+            api_key=api_key,
+            model_name=normalized_model,
+            messages=messages,
+            timeout_sec=timeout_sec,
+        )
+    except _ApiEndpointError as primary_error:
+        alternate_endpoint = _alternate_compatible_endpoint(endpoint)
+        if not (
+            primary_error.status_code == 403
+            and _is_cloudflare_1010(primary_error.detail)
+            and alternate_endpoint
+        ):
+            raise RuntimeError(str(primary_error)) from primary_error
 
-    try:
-        data = json.loads(raw)
-        content = _extract_response_text(data)
-    except Exception as exc:  # pylint: disable=broad-except
-        if isinstance(exc, RuntimeError):
-            raise
-        raise RuntimeError(f"模型返回格式异常: {raw[:500]}") from exc
-    return content
+        try:
+            return _request_openai_compatible_endpoint(
+                endpoint=alternate_endpoint,
+                api_key=api_key,
+                model_name=normalized_model,
+                messages=messages,
+                timeout_sec=timeout_sec,
+            )
+        except Exception as alternate_error:  # pylint: disable=broad-except
+            raise RuntimeError(
+                f"主端点 {endpoint} 返回 Cloudflare 1010（403），"
+                f"已自动切换到兼容端点 {alternate_endpoint}，但仍调用失败："
+                f"{alternate_error}"
+            ) from alternate_error
 
 
 def build_ai_insight(project_name, total, resolved_count, high_count, module_analysis, top1_module, top1_nature, rows, llm_config):

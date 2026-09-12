@@ -82,8 +82,12 @@ Streamlit 页面中的“报告生成规则”提供了一份推荐提示词，�
 如果使用 `5spiritual`，页面配置示例为：
 
 - 接口地址：`https://5spiritual.com`
-- 接口端点：`/v1/responses`
+- 接口端点：`/v1/chat/completions`
 - 模型标识：`openai/gpt-5.5`
+
+如果仍填写 `/v1/responses`，且服务端返回 `403 / Cloudflare error code: 1010`，
+工具会自动使用同一 Base URL 的 `/v1/chat/completions` 重试；两个端点都失败时才会报错，
+不会生成固定模板报告。
 
 ## 备注
 - CSV 建议使用 `UTF-8 with BOM` 编码，避免中文乱码。
