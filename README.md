@@ -7,6 +7,7 @@
 - 支持可选 AI 增强：可在网页端填写 `API Base URL / API Key / Model`，调用 OpenAI 兼容接口生成发布建议。
 - 支持编辑“报告生成规则提示词”：每次启用 AI 时，模型会根据当前提示词重新分析上传的 Bug 明细和统计结果。
 - AI 模式为严格调用：接口鉴权失败、网络失败或模型返回格式异常时，直接提示错误且不生成固定模板报告。
+- 支持手动填写接口端点，并兼容 OpenAI Responses API（例如 `/v1/responses`）和 Chat Completions API（例如 `/v1/chat/completions`）。
 
 ## 输入字段（必须包含）
 - `标题`
@@ -77,6 +78,12 @@ Streamlit 页面中的“报告生成规则”提供了一份推荐提示词，�
 - 标题不完整、状态异常、关键信息缺失等数据质量问题。
 
 提示词可以按项目实际规则修改。模型输出仍会遵守系统要求的 JSON 格式，以便稳定写入报告中的 AI 增强洞察章节。
+
+如果使用 `5spiritual`，页面配置示例为：
+
+- 接口地址：`https://5spiritual.com`
+- 接口端点：`/v1/responses`
+- 模型标识：`openai/gpt-5.5`
 
 ## 备注
 - CSV 建议使用 `UTF-8 with BOM` 编码，避免中文乱码。

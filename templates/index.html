@@ -62,16 +62,21 @@
                 <div class="hint">启用后会调用你填写的 OpenAI 兼容接口，为报告补充发布建议和风险分析。</div>
                 <div id="ai-config" class="hidden" style="margin-top: 10px;">
                     <div class="row">
-                        <label for="api_base_url">API Base URL</label>
-                        <input id="api_base_url" name="api_base_url" type="text" placeholder="例如：https://api.openai.com/v1">
+                        <label for="api_base_url">接口地址（API Base URL）</label>
+                        <input id="api_base_url" name="api_base_url" type="text" placeholder="例如：https://5spiritual.com">
+                    </div>
+                    <div class="row">
+                        <label for="api_endpoint">接口端点</label>
+                        <input id="api_endpoint" name="api_endpoint" type="text" value="/v1/responses" placeholder="/v1/responses 或 /v1/chat/completions">
+                        <div class="hint">5spiritual 请填写：/v1/responses。</div>
                     </div>
                     <div class="row">
                         <label for="api_key">API Key</label>
                         <input id="api_key" name="api_key" type="password" placeholder="请输入你的 API Key">
                     </div>
                     <div class="row" style="margin-bottom: 0;">
-                        <label for="model_name">模型名称</label>
-                        <input id="model_name" name="model_name" type="text" placeholder="例如：gpt-4.1 / glm-4-plus">
+                        <label for="model_name">模型标识</label>
+                        <input id="model_name" name="model_name" type="text" placeholder="例如：openai/gpt-5.5 / gpt-4.1 / glm-4-plus">
                         <div class="hint">智谱推荐填写：glm-4-plus（填写“智谱”也会自动映射）。</div>
                     </div>
                     <div class="row" style="margin-top: 16px; margin-bottom: 0;">
@@ -97,6 +102,7 @@
         const useAiInput = document.getElementById("use_ai");
         const aiConfig = document.getElementById("ai-config");
         const apiBaseUrlInput = document.getElementById("api_base_url");
+        const apiEndpointInput = document.getElementById("api_endpoint");
         const apiKeyInput = document.getElementById("api_key");
         const modelNameInput = document.getElementById("model_name");
         const reportPromptInput = document.getElementById("report_prompt");
@@ -142,6 +148,7 @@
                 formData.append("project_name", projectNameInput.value || "");
                 formData.append("use_ai", useAiInput.checked ? "1" : "0");
                 formData.append("api_base_url", apiBaseUrlInput.value || "");
+                formData.append("api_endpoint", apiEndpointInput.value || "");
                 formData.append("api_key", apiKeyInput.value || "");
                 formData.append("model_name", modelNameInput.value || "");
                 formData.append("report_prompt", reportPromptInput.value || "");

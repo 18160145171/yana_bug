@@ -7,14 +7,20 @@ from pathlib import Path
 
 import streamlit as st
 
-from generate_bug_report import DEFAULT_REPORT_PROMPT, build_html, load_rows, validate_columns
+from generate_bug_report import (
+    DEFAULT_API_ENDPOINT,
+    DEFAULT_REPORT_PROMPT,
+    build_html,
+    load_rows,
+    validate_columns,
+)
 
 
 BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_DIR = BASE_DIR / "uploads"
 OUTPUT_DIR = BASE_DIR / "outputs"
 ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xls"}
-APP_VERSION = "2026.09.11-streamlit-ai-strict"
+APP_VERSION = "2026.09.12-streamlit-responses"
 
 
 def safe_filename(filename):
@@ -68,14 +74,27 @@ bug_file = st.file_uploader(
 use_ai = st.toggle("启用 AI 增强分析", value=False)
 
 api_base_url = ""
+api_endpoint = DEFAULT_API_ENDPOINT
 api_key = ""
 model_name = ""
 report_prompt = DEFAULT_REPORT_PROMPT
 if use_ai:
     st.info("AI 模式已开启：生成时必须成功调用模型接口；接口失败不会回退生成固定模板报告。")
-    api_base_url = st.text_input("API Base URL", placeholder="例如：https://api.openai.com/v1")
+    api_base_url = st.text_input("接口地址（API Base URL）", placeholder="例如：https://5spiritual.com")
+    api_endpoint = st.text_input(
+        "接口端点",
+        value=DEFAULT_API_ENDPOINT,
+        placeholder="/v1/responses 或 /v1/chat/completions",
+    )
     api_key = st.text_input("API Key", type="password")
-    model_name = st.text_input("模型名称", placeholder="例如：gpt-4.1 / glm-4-plus")
+    model_name = st.text_input(
+        "模型标识",
+        placeholder="例如：openai/gpt-5.5 / gpt-4.1 / glm-4-plus",
+    )
+    st.caption(
+        "5spiritual 示例：接口地址 `https://5spiritual.com`，"
+        "接口端点 `/v1/responses`，模型标识 `openai/gpt-5.5`。"
+    )
     st.subheader("报告生成规则")
     report_prompt = st.text_area(
         "可编辑提示词",
@@ -90,14 +109,20 @@ with st.form("report-form"):
 if submitted:
     if bug_file is None:
         st.error("请选择要上传的 Bug 文档。")
-    elif use_ai and (not api_base_url.strip() or not api_key.strip() or not model_name.strip()):
-        st.error("启用 AI 时，请填写 API Base URL、API Key 和模型名称。")
+    elif use_ai and (
+        not api_base_url.strip()
+        or not api_endpoint.strip()
+        or not api_key.strip()
+        or not model_name.strip()
+    ):
+        st.error("启用 AI 时，请填写接口地址、接口端点、API Key 和模型标识。")
     else:
         llm_config = None
         if use_ai:
             llm_config = {
                 "enabled": True,
                 "api_base_url": api_base_url.strip(),
+                "api_endpoint": api_endpoint.strip(),
                 "api_key": api_key.strip(),
                 "model_name": model_name.strip(),
                 "report_prompt": report_prompt.strip() or DEFAULT_REPORT_PROMPT,

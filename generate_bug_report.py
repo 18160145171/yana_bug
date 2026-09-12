@@ -9,6 +9,7 @@ import os
 import re
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -38,6 +39,7 @@ STATUS_INDEX = {status: idx for idx, status in enumerate(ALL_STATUS_ORDER)}
 HIGH_PRIORITY_KEYWORDS = ["高", "紧急", "严重", "critical", "p0", "p1", "blocker"]
 UI_KEYWORDS = ["ui", "页面", "显示", "样式", "布局", "交互", "按钮", "弹窗", "对齐", "颜色", "字体"]
 MODEL_MAX_ROWS = 500
+DEFAULT_API_ENDPOINT = "/v1/responses"
 
 DEFAULT_REPORT_PROMPT = """请以优秀测试软件工程师和测试经理的视角，重新分析输入的 Bug 数据，生成正式、客观、简洁、可执行的质量验收与缺陷分析结论。
 严格以输入数据为依据，不臆造版本、环境、复现步骤、责任人或修复状态；输入缺失的信息请明确标注“数据未提供”。
@@ -228,14 +230,94 @@ def ensure_f_drive_or_desktop():
     return desktop
 
 
-def call_openai_compatible_chat(api_base_url, api_key, model_name, messages, timeout_sec=45):
+def resolve_api_endpoint(api_base_url, api_endpoint):
     base = normalize_text(api_base_url).rstrip("/")
     if not base:
         raise RuntimeError("API Base URL 不能为空。")
-    if base.endswith("/chat/completions"):
-        endpoint = base
-    else:
-        endpoint = f"{base}/chat/completions"
+
+    configured_endpoint = normalize_text(api_endpoint) or DEFAULT_API_ENDPOINT
+    if configured_endpoint.lower().startswith(("http://", "https://")):
+        return configured_endpoint.rstrip("/")
+
+    path = configured_endpoint if configured_endpoint.startswith("/") else f"/{configured_endpoint}"
+    if path.lower().startswith("/v1/") and base.lower().endswith("/v1"):
+        path = path[3:]
+    if base.lower().endswith(path.lower()):
+        return base
+    return f"{base}{path}"
+
+
+def _is_responses_endpoint(endpoint):
+    path = urllib.parse.urlparse(endpoint).path.rstrip("/").lower()
+    return path.endswith("/responses")
+
+
+def _messages_to_responses_input(messages):
+    return [
+        {
+            "role": normalize_text(message.get("role")) or "user",
+            "content": [
+                {
+                    "type": "input_text",
+                    "text": normalize_text(message.get("content")),
+                }
+            ],
+        }
+        for message in messages
+    ]
+
+
+def _extract_response_text(data):
+    if not isinstance(data, dict):
+        raise RuntimeError("模型返回格式异常：顶层结果不是 JSON 对象。")
+
+    output_text = data.get("output_text")
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text.strip()
+
+    choices = data.get("choices")
+    if isinstance(choices, list) and choices:
+        message = choices[0].get("message", {})
+        content = message.get("content") if isinstance(message, dict) else None
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            text_parts = [
+                item.get("text", "")
+                for item in content
+                if isinstance(item, dict) and isinstance(item.get("text"), str)
+            ]
+            return "".join(text_parts).strip()
+
+    output = data.get("output")
+    text_parts = []
+    if isinstance(output, list):
+        for item in output:
+            if not isinstance(item, dict):
+                continue
+            content = item.get("content")
+            if isinstance(content, str):
+                text_parts.append(content)
+            elif isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict) and isinstance(part.get("text"), str):
+                        text_parts.append(part["text"])
+    if text_parts:
+        return "".join(text_parts).strip()
+
+    raise RuntimeError(f"模型返回格式异常：未找到文本内容。原始返回：{json.dumps(data, ensure_ascii=False)[:500]}")
+
+
+def call_openai_compatible_chat(
+    api_base_url,
+    api_key,
+    model_name,
+    messages,
+    timeout_sec=45,
+    api_endpoint=DEFAULT_API_ENDPOINT,
+):
+    base = normalize_text(api_base_url).rstrip("/")
+    endpoint = resolve_api_endpoint(api_base_url, api_endpoint)
 
     normalized_model = normalize_text(model_name)
     if "open.bigmodel.cn" in base.lower():
@@ -254,11 +336,17 @@ def call_openai_compatible_chat(api_base_url, api_key, model_name, messages, tim
                 "通常应为 'id.secret' 形式，请从智谱控制台重新复制。"
             )
 
-    payload = {
-        "model": normalized_model,
-        "messages": messages,
-        "temperature": 0.3,
-    }
+    if _is_responses_endpoint(endpoint):
+        payload = {
+            "model": normalized_model,
+            "input": _messages_to_responses_input(messages),
+        }
+    else:
+        payload = {
+            "model": normalized_model,
+            "messages": messages,
+            "temperature": 0.3,
+        }
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
         endpoint,
@@ -278,26 +366,32 @@ def call_openai_compatible_chat(api_base_url, api_key, model_name, messages, tim
             raise RuntimeError(
                 "模型接口返回 401（鉴权失败）。请检查："
                 "1) API Key 是否有效且完整；"
-                "2) Base URL 是否为 https://open.bigmodel.cn/api/paas/v4；"
-                "3) 模型名称是否为 glm-4-plus / glm-4-air / glm-4-flash。"
+                f"2) 接口地址是否正确（当前请求：{endpoint}）；"
+                "3) 模型标识是否与服务商配置一致。"
                 f" 原始返回：{detail[:300]}"
             ) from exc
-        raise RuntimeError(f"模型接口错误 HTTP {exc.code}: {detail[:500]}") from exc
+        if exc.code == 403:
+            raise RuntimeError(
+                f"模型接口返回 403（服务端拒绝请求），当前请求地址：{endpoint}。"
+                "请核对 API Key、接口端点和模型标识；"
+                "5spiritual 示例配置为：Base URL=https://5spiritual.com，"
+                "接口端点=/v1/responses，模型标识=openai/gpt-5.5。"
+                f" 原始返回：{detail[:500]}"
+            ) from exc
+        raise RuntimeError(
+            f"模型接口错误 HTTP {exc.code}，当前请求地址：{endpoint}：{detail[:500]}"
+        ) from exc
     except urllib.error.URLError as exc:
-        raise RuntimeError(f"模型接口连接失败: {exc.reason}") from exc
+        raise RuntimeError(f"模型接口连接失败（{endpoint}）：{exc.reason}") from exc
 
     try:
         data = json.loads(raw)
-        content = data["choices"][0]["message"]["content"]
+        content = _extract_response_text(data)
     except Exception as exc:  # pylint: disable=broad-except
+        if isinstance(exc, RuntimeError):
+            raise
         raise RuntimeError(f"模型返回格式异常: {raw[:500]}") from exc
-
-    if isinstance(content, list):
-        return "".join(
-            item.get("text", "") if isinstance(item, dict) else str(item)
-            for item in content
-        ).strip()
-    return normalize_text(content)
+    return content
 
 
 def build_ai_insight(project_name, total, resolved_count, high_count, module_analysis, top1_module, top1_nature, rows, llm_config):
@@ -377,6 +471,7 @@ def build_ai_insight(project_name, total, resolved_count, high_count, module_ana
         api_key=llm_config.get("api_key", ""),
         model_name=llm_config.get("model_name", ""),
         messages=messages,
+        api_endpoint=llm_config.get("api_endpoint", DEFAULT_API_ENDPOINT),
     )
 
     cleaned = content.strip()

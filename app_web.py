@@ -7,13 +7,19 @@ from pathlib import Path
 from flask import Flask, jsonify, redirect, render_template, request, send_file, url_for
 from werkzeug.utils import secure_filename
 
-from generate_bug_report import DEFAULT_REPORT_PROMPT, build_html, load_rows, validate_columns
+from generate_bug_report import (
+    DEFAULT_API_ENDPOINT,
+    DEFAULT_REPORT_PROMPT,
+    build_html,
+    load_rows,
+    validate_columns,
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_DIR = BASE_DIR / "uploads"
 OUTPUT_DIR = BASE_DIR / "outputs"
 ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xls"}
-APP_VERSION = "2026.09.11-ai-strict"
+APP_VERSION = "2026.09.12-api-endpoint"
 
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -47,6 +53,7 @@ def api_generate():
     project_name = (request.form.get("project_name") or "").strip()
     use_ai = (request.form.get("use_ai") or "0").strip() == "1"
     api_base_url = (request.form.get("api_base_url") or "").strip()
+    api_endpoint = (request.form.get("api_endpoint") or "").strip() or DEFAULT_API_ENDPOINT
     api_key = (request.form.get("api_key") or "").strip()
     model_name = (request.form.get("model_name") or "").strip()
     report_prompt = (request.form.get("report_prompt") or "").strip() or DEFAULT_REPORT_PROMPT
@@ -69,14 +76,15 @@ def api_generate():
             project_name = Path(file.filename).stem
         llm_config = None
         if use_ai:
-            if not api_base_url or not api_key or not model_name:
+            if not api_base_url or not api_endpoint or not api_key or not model_name:
                 return (
-                    jsonify({"ok": False, "error": "启用 AI 时，请填写 API Base URL、API Key 和模型名称。"}),
+                    jsonify({"ok": False, "error": "启用 AI 时，请填写接口地址、接口端点、API Key 和模型标识。"}),
                     400,
                 )
             llm_config = {
                 "enabled": True,
                 "api_base_url": api_base_url,
+                "api_endpoint": api_endpoint,
                 "api_key": api_key,
                 "model_name": model_name,
                 "report_prompt": report_prompt,
