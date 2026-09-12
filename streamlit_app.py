@@ -2,12 +2,18 @@
 # -*- coding: utf-8 -*-
 
 import datetime as dt
+import importlib
 import re
 from pathlib import Path
 
 import streamlit as st
 
-from generate_bug_report import (
+import generate_bug_report as report_engine
+
+# Streamlit Cloud 热更新时可能保留旧模块缓存，显式重载保证新接口配置生效。
+report_engine = importlib.reload(report_engine)
+
+from generate_bug_report import (  # noqa: E402
     DEFAULT_API_ENDPOINT,
     DEFAULT_REPORT_PROMPT,
     build_html,
@@ -20,7 +26,7 @@ BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_DIR = BASE_DIR / "uploads"
 OUTPUT_DIR = BASE_DIR / "outputs"
 ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xls"}
-APP_VERSION = "2026.09.12-streamlit-responses"
+APP_VERSION = "2026.09.12-streamlit-responses-r2"
 
 
 def safe_filename(filename):
