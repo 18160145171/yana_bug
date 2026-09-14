@@ -34,6 +34,26 @@ def _http_error(endpoint, status, detail):
 
 
 class ApiFallbackTests(unittest.TestCase):
+    def test_default_timeout_is_300_seconds(self):
+        timeouts = []
+
+        def fake_urlopen(request, timeout):
+            timeouts.append(timeout)
+            return _FakeResponse(
+                json.dumps({"choices": [{"message": {"content": "ok"}}]}).encode()
+            )
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            result = call_openai_compatible_chat(
+                api_base_url="https://example.test",
+                api_key="test-key",
+                model_name="test-model",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        self.assertEqual(result, "ok")
+        self.assertEqual(timeouts, [300])
+
     def test_cloudflare_1010_falls_back_to_chat_completions(self):
         calls = []
         user_agents = []

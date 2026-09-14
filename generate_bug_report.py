@@ -425,7 +425,7 @@ def call_openai_compatible_chat(
     api_key,
     model_name,
     messages,
-    timeout_sec=45,
+    timeout_sec=300,
     api_endpoint=DEFAULT_API_ENDPOINT,
 ):
     base = normalize_text(api_base_url).rstrip("/")
