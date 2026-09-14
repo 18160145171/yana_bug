@@ -2,3 +2,5 @@ pandas
 openpyxl
 flask
 streamlit
+python-docx
+Pillow

@@ -4,6 +4,7 @@
 import csv
 import datetime as dt
 import html
+import io
 import json
 import os
 import re
@@ -13,6 +14,13 @@ import urllib.parse
 import urllib.request
 from collections import Counter, defaultdict
 from pathlib import Path
+
+from docx import Document
+from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_TABLE_ALIGNMENT
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
+from docx.shared import Inches, Pt, RGBColor
 
 REQUIRED_COLUMNS = []
 OPTIONAL_COLUMNS = ["标题", "任务ID", "执行者", "父任务", "任务状态", "优先级", "参与者"]
@@ -40,6 +48,13 @@ HIGH_PRIORITY_KEYWORDS = ["高", "紧急", "严重", "critical", "p0", "p1", "bl
 UI_KEYWORDS = ["ui", "页面", "显示", "样式", "布局", "交互", "按钮", "弹窗", "对齐", "颜色", "字体"]
 MODEL_MAX_ROWS = 500
 DEFAULT_API_ENDPOINT = "/v1/chat/completions"
+
+DOCX_BODY_FONT = "宋体"
+DOCX_HEADING_FONT = "黑体"
+DOCX_ACCENT = "4F81BD"
+DOCX_BORDER = "D9D9D9"
+DOCX_HEADER_FILL = "D9EAF7"
+DOCX_ALT_ROW_FILL = "F7F9FC"
 
 DEFAULT_REPORT_PROMPT = """请以优秀测试软件工程师和测试经理的视角，重新分析输入的 Bug 数据，生成正式、客观、简洁、可执行的质量验收与缺陷分析结论。
 严格以输入数据为依据，不臆造版本、环境、复现步骤、责任人或修复状态；输入缺失的信息请明确标注“数据未提供”。
@@ -828,18 +843,667 @@ def build_html(project_name, rows, llm_config=None):
     return html_doc
 
 
+def normalize_priority_label(value):
+    text = normalize_text(value)
+    lowered = text.lower()
+    if not text:
+        return "未标注"
+    if any(token in lowered for token in ["p0", "p1", "blocker", "critical"]) or any(
+        token in text for token in ["高", "严重", "紧急"]
+    ):
+        return "高"
+    if any(token in lowered for token in ["p2", "major", "medium"]) or "中" in text:
+        return "中"
+    if any(token in lowered for token in ["p3", "p4", "minor", "low"]) or "低" in text:
+        return "低"
+    return text
+
+
+def _priority_sort_key(label):
+    return {"高": 0, "中": 1, "低": 2, "未标注": 3}.get(label, 4), label
+
+
+def collect_report_stats(rows):
+    total = len(rows)
+    resolved_count = sum(
+        1 for row in rows if normalize_text(row.get("任务状态")) in CLOSED_STATUS_ORDER
+    )
+    high_count = sum(1 for row in rows if is_high_priority(row.get("优先级")))
+
+    participants = set()
+    module_counter = Counter()
+    module_titles = defaultdict(list)
+    priority_counter = Counter()
+    executor_counter = Counter()
+    status_counter = Counter()
+
+    for row in rows:
+        executor = normalize_text(row.get("执行者")) or "未分配"
+        executor_counter[executor] += 1
+        status_counter[normalize_text(row.get("任务状态")) or "未标注"] += 1
+        priority_counter[normalize_priority_label(row.get("优先级"))] += 1
+
+        for person in split_people(row.get("执行者")):
+            participants.add(person)
+        for person in split_people(row.get("参与者")):
+            participants.add(person)
+
+        title = normalize_text(row.get("标题"))
+        module = classify_module(title)
+        module_counter[module] += 1
+        module_titles[module].append(title)
+
+    module_analysis = []
+    for module_name, count in module_counter.items():
+        weight = density_weight(count)
+        module_analysis.append(
+            {
+                "module": module_name,
+                "count": count,
+                "weight": weight,
+                "density": count / weight,
+                "percentage": format_percent(count, total),
+            }
+        )
+    module_analysis.sort(key=lambda item: (-item["count"], item["module"]))
+
+    top1_module = module_analysis[0]["module"] if module_analysis else "无"
+    top1_nature = issue_nature_by_titles(module_titles.get(top1_module, []))
+    unresolved_count = total - resolved_count
+
+    return {
+        "total": total,
+        "resolved_count": resolved_count,
+        "unresolved_count": unresolved_count,
+        "high_count": high_count,
+        "participants": participants,
+        "module_analysis": module_analysis,
+        "priority_counter": priority_counter,
+        "executor_counter": executor_counter,
+        "status_counter": status_counter,
+        "top1_module": top1_module,
+        "top1_nature": top1_nature,
+    }
+
+
+def _set_run_font(run, name=DOCX_BODY_FONT, size=10.5, bold=None, italic=None, color=None):
+    run.font.name = name
+    run.font.size = Pt(size)
+    if bold is not None:
+        run.bold = bold
+    if italic is not None:
+        run.italic = italic
+    if color:
+        run.font.color.rgb = RGBColor.from_string(color)
+
+    r_pr = run._element.get_or_add_rPr()
+    r_fonts = r_pr.find(qn("w:rFonts"))
+    if r_fonts is None:
+        r_fonts = OxmlElement("w:rFonts")
+        r_pr.insert(0, r_fonts)
+    for attribute in ("w:ascii", "w:hAnsi", "w:eastAsia", "w:cs"):
+        r_fonts.set(qn(attribute), name)
+
+
+def _configure_docx_styles(document):
+    normal = document.styles["Normal"]
+    normal.font.name = DOCX_BODY_FONT
+    normal.font.size = Pt(10.5)
+    normal.font.color.rgb = RGBColor(0, 0, 0)
+    normal._element.rPr.rFonts.set(qn("w:eastAsia"), DOCX_BODY_FONT)
+    normal._element.rPr.rFonts.set(qn("w:ascii"), DOCX_BODY_FONT)
+    normal._element.rPr.rFonts.set(qn("w:hAnsi"), DOCX_BODY_FONT)
+
+    heading_settings = {
+        "Heading 1": (14, DOCX_ACCENT, False),
+        "Heading 2": (13, DOCX_ACCENT, False),
+        "Heading 3": (11.5, DOCX_ACCENT, False),
+        "Heading 4": (10.5, DOCX_ACCENT, True),
+    }
+    for style_name, (size, color, italic) in heading_settings.items():
+        style = document.styles[style_name]
+        style.font.name = DOCX_HEADING_FONT
+        style.font.size = Pt(size)
+        style.font.bold = True
+        style.font.italic = italic
+        style.font.color.rgb = RGBColor.from_string(color)
+        style._element.rPr.rFonts.set(qn("w:eastAsia"), DOCX_HEADING_FONT)
+        style._element.rPr.rFonts.set(qn("w:ascii"), DOCX_HEADING_FONT)
+        style._element.rPr.rFonts.set(qn("w:hAnsi"), DOCX_HEADING_FONT)
+        style.paragraph_format.keep_with_next = True
+        style.paragraph_format.keep_together = True
+        style.paragraph_format.space_before = Pt(10 if style_name != "Heading 1" else 24)
+        style.paragraph_format.space_after = Pt(0)
+
+
+def _set_cell_shading(cell, fill):
+    tc_pr = cell._tc.get_or_add_tcPr()
+    shading = tc_pr.find(qn("w:shd"))
+    if shading is None:
+        shading = OxmlElement("w:shd")
+        tc_pr.append(shading)
+    shading.set(qn("w:fill"), fill)
+    shading.set(qn("w:val"), "clear")
+
+
+def _set_cell_margins(cell, top=90, start=108, bottom=90, end=108):
+    tc_pr = cell._tc.get_or_add_tcPr()
+    tc_mar = tc_pr.find(qn("w:tcMar"))
+    if tc_mar is None:
+        tc_mar = OxmlElement("w:tcMar")
+        tc_pr.append(tc_mar)
+    for side, value in (("top", top), ("start", start), ("bottom", bottom), ("end", end)):
+        element = tc_mar.find(qn(f"w:{side}"))
+        if element is None:
+            element = OxmlElement(f"w:{side}")
+            tc_mar.append(element)
+        element.set(qn("w:w"), str(value))
+        element.set(qn("w:type"), "dxa")
+
+
+def _set_table_borders(table, color=DOCX_BORDER):
+    tbl_pr = table._tbl.tblPr
+    borders = tbl_pr.find(qn("w:tblBorders"))
+    if borders is None:
+        borders = OxmlElement("w:tblBorders")
+        tbl_pr.append(borders)
+    for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
+        tag = qn(f"w:{edge}")
+        element = borders.find(tag)
+        if element is None:
+            element = OxmlElement(f"w:{edge}")
+            borders.append(element)
+        element.set(qn("w:val"), "single")
+        element.set(qn("w:sz"), "6")
+        element.set(qn("w:space"), "0")
+        element.set(qn("w:color"), color)
+
+
+def _mark_header_row(row):
+    tr_pr = row._tr.get_or_add_trPr()
+    header = tr_pr.find(qn("w:tblHeader"))
+    if header is None:
+        header = OxmlElement("w:tblHeader")
+        tr_pr.append(header)
+    header.set(qn("w:val"), "true")
+
+
+def _set_cell_text(cell, value, bold=False, size=10.5, align=WD_ALIGN_PARAGRAPH.LEFT):
+    cell.text = ""
+    paragraph = cell.paragraphs[0]
+    paragraph.alignment = align
+    paragraph.paragraph_format.space_before = Pt(0)
+    paragraph.paragraph_format.space_after = Pt(0)
+    paragraph.paragraph_format.line_spacing = 1.05
+    run = paragraph.add_run(normalize_text(value))
+    _set_run_font(run, size=size, bold=bold)
+    cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+    _set_cell_margins(cell)
+
+
+def _add_docx_table(document, headers, rows, widths, font_size=10.5):
+    table = document.add_table(rows=1, cols=len(headers))
+    try:
+        table.style = "Light Grid Accent 1"
+    except KeyError:
+        table.style = "Table Grid"
+    table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    table.autofit = False
+    _set_table_borders(table)
+    _mark_header_row(table.rows[0])
+
+    for index, (cell, header) in enumerate(zip(table.rows[0].cells, headers)):
+        cell.width = Inches(widths[index])
+        _set_cell_text(
+            cell,
+            header,
+            bold=True,
+            size=font_size,
+            align=WD_ALIGN_PARAGRAPH.CENTER,
+        )
+        _set_cell_shading(cell, DOCX_HEADER_FILL)
+
+    for row_index, values in enumerate(rows):
+        cells = table.add_row().cells
+        for index, (cell, value) in enumerate(zip(cells, values)):
+            cell.width = Inches(widths[index])
+            align = (
+                WD_ALIGN_PARAGRAPH.CENTER
+                if index == 0 or (isinstance(value, (int, float)) and index < len(values) - 1)
+                else WD_ALIGN_PARAGRAPH.LEFT
+            )
+            _set_cell_text(cell, value, size=font_size, align=align)
+            if row_index % 2 == 1:
+                _set_cell_shading(cell, DOCX_ALT_ROW_FILL)
+
+    for row in table.rows:
+        for index, cell in enumerate(row.cells):
+            cell.width = Inches(widths[index])
+            _set_cell_margins(cell)
+    return table
+
+
+def _add_docx_body_paragraph(document, text, bold_prefix=""):
+    paragraph = document.add_paragraph()
+    paragraph.paragraph_format.space_after = Pt(6)
+    paragraph.paragraph_format.line_spacing = 1.15
+    if bold_prefix and text.startswith(bold_prefix):
+        lead = paragraph.add_run(bold_prefix)
+        _set_run_font(lead, bold=True)
+        body = paragraph.add_run(text[len(bold_prefix):])
+        _set_run_font(body)
+    else:
+        run = paragraph.add_run(text)
+        _set_run_font(run)
+    return paragraph
+
+
+def _find_chart_font():
+    candidates = [
+        os.environ.get("REPORT_CJK_FONT", ""),
+        "C:/Windows/Fonts/msyh.ttc",
+        "C:/Windows/Fonts/simhei.ttf",
+        "C:/Windows/Fonts/simsun.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+    ]
+    for candidate in candidates:
+        if candidate and Path(candidate).exists():
+            return candidate
+    return ""
+
+
+def _chart_font(size, bold=False):
+    from PIL import ImageFont  # pylint: disable=import-outside-toplevel
+
+    path = _find_chart_font()
+    if path:
+        try:
+            return ImageFont.truetype(path, size=size, index=0)
+        except (OSError, ValueError):
+            pass
+    return ImageFont.load_default()
+
+
+def _chart_text_supports_cjk():
+    path = _find_chart_font().lower()
+    return any(token in path for token in ["msyh", "simhei", "simsun", "noto", "wqy"])
+
+
+def _text_bbox(draw, text, font):
+    left, top, right, bottom = draw.textbbox((0, 0), text, font=font)
+    return right - left, bottom - top
+
+
+def _make_priority_chart(priority_counter):
+    try:
+        from PIL import Image, ImageDraw  # pylint: disable=import-outside-toplevel
+    except ImportError:
+        return None
+
+    width, height = 860, 470
+    image = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(image)
+    total = sum(priority_counter.values())
+    if total <= 0:
+        return None
+
+    colors = {"高": "#8BC66E", "中": "#F7C857", "低": "#5874C7"}
+    ordered = sorted(priority_counter.items(), key=lambda item: _priority_sort_key(item[0]))
+    box = (130, 45, 570, 405)
+    start = -90
+    for label, count in ordered:
+        extent = count / total * 360
+        draw.pieslice(box, start=start, end=start + extent, fill=colors.get(label, "#A9B4C6"), outline="white")
+        start += extent
+    inner = (225, 140, 475, 390)
+    draw.ellipse(inner, fill="white")
+
+    big_font = _chart_font(52)
+    small_font = _chart_font(21)
+    total_text = str(total)
+    tw, th = _text_bbox(draw, total_text, big_font)
+    draw.text(((inner[0] + inner[2] - tw) / 2, 205), total_text, fill="#333333", font=big_font)
+    if _chart_text_supports_cjk():
+        label = "Bug总数"
+        tw, th = _text_bbox(draw, label, small_font)
+        draw.text(((inner[0] + inner[2] - tw) / 2, 278), label, fill="#666666", font=small_font)
+
+    legend_font = _chart_font(20)
+    legend_x = 625
+    legend_y = 105
+    for label, count in ordered:
+        color = colors.get(label, "#A9B4C6")
+        draw.rounded_rectangle((legend_x, legend_y + 3, legend_x + 22, legend_y + 25), radius=3, fill=color)
+        legend = f"{label}  {count}（{format_percent(count, total)}）" if _chart_text_supports_cjk() else f"{count} ({format_percent(count, total)})"
+        draw.text((legend_x + 34, legend_y), legend, fill="#333333", font=legend_font)
+        legend_y += 48
+
+    stream = io.BytesIO()
+    image.save(stream, format="PNG")
+    stream.seek(0)
+    return stream
+
+
+def _make_module_chart(module_analysis):
+    try:
+        from PIL import Image, ImageDraw  # pylint: disable=import-outside-toplevel
+    except ImportError:
+        return None
+
+    items = module_analysis[:8]
+    if not items:
+        return None
+    width, height = 960, 520
+    image = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(image)
+    left, top, right, bottom = 85, 45, 920, 425
+    chart_height = bottom - top
+    max_count = max(item["count"] for item in items) or 1
+    font = _chart_font(17)
+    value_font = _chart_font(18)
+    label_font = _chart_font(15)
+    bar_width = max(32, int((right - left) / len(items) * 0.62))
+    step = (right - left) / len(items)
+    grid_font = _chart_font(14)
+
+    for tick in range(0, max_count + 1, max(1, max_count // 4 or 1)):
+        y = bottom - int(tick / max_count * chart_height)
+        draw.line((left, y, right, y), fill="#E1E5EB", width=1)
+        draw.text((left - 35, y - 9), str(tick), fill="#555555", font=grid_font)
+    draw.line((left, bottom, right, bottom), fill="#555555", width=2)
+    draw.line((left, top, left, bottom), fill="#555555", width=2)
+
+    for index, item in enumerate(items):
+        x_center = int(left + step * (index + 0.5))
+        bar_left = x_center - bar_width // 2
+        bar_top = bottom - int(item["count"] / max_count * chart_height)
+        draw.rectangle((bar_left, bar_top, x_center + bar_width // 2, bottom), fill="#7890D0")
+        value = str(item["count"])
+        vw, vh = _text_bbox(draw, value, value_font)
+        draw.text((x_center - vw / 2, max(5, bar_top - vh - 4)), value, fill="#333333", font=value_font)
+        if _chart_text_supports_cjk():
+            label = item["module"]
+            lw, lh = _text_bbox(draw, label, label_font)
+            draw.text((x_center - lw / 2, bottom + 14), label, fill="#333333", font=label_font)
+        else:
+            draw.text((x_center - 5, bottom + 14), str(index + 1), fill="#333333", font=font)
+
+    stream = io.BytesIO()
+    image.save(stream, format="PNG")
+    stream.seek(0)
+    return stream
+
+
+def _add_chart(document, stream, width_inches=5.75):
+    if stream is None:
+        return
+    document.add_picture(stream, width=Inches(width_inches))
+    paragraph = document.paragraphs[-1]
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    paragraph.paragraph_format.space_after = Pt(2)
+
+
+def _module_analysis_text(module_name, count, top_module):
+    if module_name == top_module:
+        return (
+            f"问题主要集中在{module_name}，共 {count} 项，"
+            "建议围绕核心流程、异常处理、结果交付和边界场景开展专项回归。"
+        )
+    return (
+        f"{module_name} 共记录 {count} 项，"
+        "建议结合缺陷标题逐项确认影响范围，避免同类问题在后续版本重复出现。"
+    )
+
+
+def _build_suggestion_groups(stats, ai_analysis):
+    risks = ai_analysis.get("risks", []) if ai_analysis else []
+    actions = ai_analysis.get("actions", []) if ai_analysis else []
+    unresolved_text = f"当前未关闭缺陷 {stats['unresolved_count']} 项。"
+    top_module = stats["top1_module"]
+    top_count = stats["module_analysis"][0]["count"] if stats["module_analysis"] else 0
+
+    defaults = [
+        (
+            "业务逻辑与结果链路",
+            unresolved_text + f"问题较集中于{top_module}（{top_count} 项），需重点关注主流程闭环。",
+            "围绕任务创建、处理、完成、失败和结果落地建立端到端回归路径，确保状态可追踪、失败可定位。",
+        ),
+        (
+            "核心功能与技术稳定性",
+            f"高优先级缺陷 {stats['high_count']} 项，部分问题可能影响核心功能稳定性。",
+            "优先清理高优先级未闭环问题，补充异常重试、超时、并发和数据边界场景验证。",
+        ),
+        (
+            "交互操作与兼容性",
+            "缺陷标题中包含页面、显示、交互或提示相关问题时，容易在不同设备和状态下重复暴露。",
+            "统一提示语、按钮状态和关键页面跳转规则，并补充多设备、多分辨率及异常状态回归。",
+        ),
+    ]
+    if not ai_analysis:
+        return defaults
+
+    focus = [
+        "发布风险与优先级",
+        "核心模块与结果链路",
+        "回归验证与体验",
+    ]
+    groups = []
+    for index, (title, issue, suggestion) in enumerate(defaults):
+        risk = risks[index] if index < len(risks) else ""
+        action = actions[index] if index < len(actions) else ""
+        if risk:
+            issue = risk
+        if action:
+            suggestion = action
+        groups.append((focus[index], issue, suggestion))
+    return groups
+
+
+def build_docx_bytes(project_name, rows, llm_config=None):
+    stats = collect_report_stats(rows)
+    ai_analysis = None
+    if llm_config and llm_config.get("enabled"):
+        try:
+            ai_analysis = build_ai_insight(
+                project_name=project_name,
+                total=stats["total"],
+                resolved_count=stats["resolved_count"],
+                high_count=stats["high_count"],
+                module_analysis=stats["module_analysis"],
+                top1_module=stats["top1_module"],
+                top1_nature=stats["top1_nature"],
+                rows=rows,
+                llm_config=llm_config,
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            raise RuntimeError(f"AI 增强调用失败，报告未生成：{exc}") from exc
+
+    document = Document()
+    _configure_docx_styles(document)
+    section = document.sections[0]
+    section.page_width = Inches(8.5)
+    section.page_height = Inches(11)
+    section.left_margin = Inches(1.25)
+    section.right_margin = Inches(1.25)
+    section.top_margin = Inches(1)
+    section.bottom_margin = Inches(1)
+    section.header_distance = Inches(0.5)
+    section.footer_distance = Inches(0.5)
+
+    title = document.add_paragraph(style="Heading 1")
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    title.paragraph_format.space_before = Pt(0)
+    title.paragraph_format.space_after = Pt(16)
+    title_run = title.add_run(f"{normalize_text(project_name)} Bug缺陷分享报告")
+    _set_run_font(title_run, name=DOCX_HEADING_FONT, size=18, bold=True, color="000000")
+
+    document.add_heading("一、版本信息", level=2)
+    main_executors = "、".join(
+        name
+        for name, _ in stats["executor_counter"].most_common(3)
+        if name != "未分配"
+    ) or "未分配"
+    version_rows = [
+        ("版本号", normalize_text(project_name)),
+        ("测试日期", dt.datetime.now().strftime("%Y年%m月%d日")),
+        ("Bug总数", f"{stats['total']} 个"),
+        (
+            "已修复缺陷",
+            f"{stats['resolved_count']} 个（修复率 {format_percent(stats['resolved_count'], stats['total'])}）",
+        ),
+        ("涉及功能模块", f"{len(stats['module_analysis'])} 个"),
+        ("主要执行人", main_executors),
+    ]
+    _add_docx_table(document, ["项目指标", "统计结果"], version_rows, [1.45, 4.55])
+
+    document.add_heading("二、Bug优先级分布", level=2)
+    _add_chart(document, _make_priority_chart(stats["priority_counter"]))
+    priority_rows = [
+        (label, count, format_percent(count, stats["total"]))
+        for label, count in sorted(stats["priority_counter"].items(), key=lambda item: _priority_sort_key(item[0]))
+    ]
+    _add_docx_table(document, ["优先级", "数量", "占比"], priority_rows, [2.0, 2.0, 2.0])
+
+    document.add_heading("三、Bug功能模块分布", level=2)
+    _add_chart(document, _make_module_chart(stats["module_analysis"]))
+    module_rows = [
+        (item["module"], item["count"], item["percentage"])
+        for item in stats["module_analysis"]
+    ]
+    _add_docx_table(document, ["功能模块", "数量", "占比"], module_rows, [2.6, 1.6, 1.8])
+
+    document.add_heading("四、Bug执行人分布", level=2)
+    executor_rows = [
+        (name, count, format_percent(count, stats["total"]))
+        for name, count in stats["executor_counter"].most_common()
+    ]
+    _add_docx_table(document, ["执行人", "处理数量", "占比"], executor_rows, [2.6, 1.6, 1.8])
+
+    document.add_heading("五、测试结论与建议", level=2)
+    document.add_heading("5.1 测试结论", level=3)
+    conclusion_table = [
+        ("缺陷总数", f"{stats['total']} 个"),
+        (
+            "已修复缺陷",
+            f"{stats['resolved_count']} 个（修复率 {format_percent(stats['resolved_count'], stats['total'])}）",
+        ),
+        ("未关闭缺陷", f"{stats['unresolved_count']} 个"),
+        ("高优先级缺陷", f"{stats['high_count']} 个"),
+        (
+            "问题集中模块",
+            (
+                f"{stats['top1_module']}（{stats['module_analysis'][0]['count']} 个）"
+                if stats["module_analysis"]
+                else "无"
+            ),
+        ),
+    ]
+    _add_docx_table(document, ["评估项", "评估结果"], conclusion_table, [1.45, 4.55])
+
+    if ai_analysis:
+        decision_text = {
+            "GO": "具备发布条件",
+            "NO-GO": "暂不建议发布",
+            "CONDITIONAL-GO": "满足风险收敛条件后发布",
+        }.get(ai_analysis["decision"], ai_analysis["decision"])
+        conclusion_text = (
+            f"{ai_analysis['summary']} 当前模型发布建议：{decision_text}。"
+        )
+    elif stats["unresolved_count"] == 0:
+        conclusion_text = (
+            "本轮缺陷已全部关闭，版本整体质量趋于稳定，具备发布条件。"
+            "建议上线后继续关注高频使用路径和真实用户场景。"
+        )
+    else:
+        conclusion_text = (
+            f"本轮共记录缺陷 {stats['total']} 项，已关闭 {stats['resolved_count']} 项，"
+            f"仍有 {stats['unresolved_count']} 项未关闭。问题主要集中在"
+            f"{stats['top1_module']}，建议在发布前完成高优先级缺陷闭环并补充专项回归。"
+        )
+    _add_docx_body_paragraph(document, "综合评估：" + conclusion_text, bold_prefix="综合评估：")
+
+    document.add_heading("5.2 缺陷问题分析", level=3)
+    top_modules = "、".join(
+        f"{item['module']}（{item['count']}项）"
+        for item in stats["module_analysis"][:3]
+    ) or "暂无模块数据"
+    analysis_text = (
+        f"本轮共记录缺陷 {stats['total']} 项，问题主要集中在 {top_modules}。"
+        f"其中高优先级缺陷 {stats['high_count']} 项，未关闭缺陷 {stats['unresolved_count']} 项，"
+        "说明当前版本仍需关注核心流程稳定性、异常兜底和交互一致性。"
+    )
+    if ai_analysis and ai_analysis["risks"]:
+        analysis_text += " 模型识别的主要风险包括：" + "；".join(ai_analysis["risks"]) + "。"
+    _add_docx_body_paragraph(document, analysis_text)
+
+    problem_rows = [
+        (
+            item["module"],
+            f"{item['count']} 个",
+            _module_analysis_text(item["module"], item["count"], stats["top1_module"]),
+        )
+        for item in stats["module_analysis"][:6]
+    ]
+    _add_docx_table(document, ["问题类型", "Bug数量", "问题分析"], problem_rows, [1.5, 0.9, 3.6], font_size=9.5)
+
+    document.add_heading("5.3 优化建议与风险提示", level=3)
+    _add_docx_body_paragraph(
+        document,
+        "结合本轮缺陷分布与问题表现，建议从业务逻辑、功能稳定性及交互体验三个层面同步推进优化，以降低重复性问题并提升版本交付质量。",
+    )
+    for heading, issue, suggestion in _build_suggestion_groups(stats, ai_analysis):
+        document.add_heading(heading, level=4)
+        _add_docx_table(
+            document,
+            ["关注点", "问题表现", "优化建议"],
+            [(heading, issue, suggestion)],
+            [1.45, 2.15, 2.4],
+            font_size=9.5,
+        )
+
+    document.add_page_break()
+    document.add_heading("六、Bug详细列表", level=2)
+    detail_rows = []
+    for index, row in enumerate(sort_rows_for_appendix(rows), start=1):
+        task_id = normalize_text(row.get("任务ID"))
+        title_text = normalize_text(row.get("标题")) or "未填写标题"
+        if task_id:
+            title_text = f"[{task_id}] {title_text}"
+        detail_rows.append(
+            (
+                index,
+                title_text,
+                normalize_priority_label(row.get("优先级")),
+                normalize_text(row.get("执行者")) or "未分配",
+                normalize_text(row.get("任务状态")) or "未标注",
+            )
+        )
+    _add_docx_table(
+        document,
+        ["序号", "Bug标题", "优先级", "执行人", "状态"],
+        detail_rows,
+        [0.45, 3.45, 0.7, 0.75, 0.65],
+        font_size=9,
+    )
+
+    output = io.BytesIO()
+    document.save(output)
+    return output.getvalue()
+
+
 def save_report(input_file, project_name):
     headers, rows = load_rows(input_file)
     validate_columns(headers)
-    rendered = build_html(project_name, rows)
+    rendered = build_docx_bytes(project_name, rows)
 
     output_dir = ensure_f_drive_or_desktop()
     timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_name = f"质量验收与缺陷分析报告_{timestamp}.doc"
+    output_name = f"Bug缺陷分享报告_{timestamp}.docx"
     output_path = output_dir / output_name
 
-    with open(output_path, "w", encoding="utf-8") as f:
-        f.write(rendered)
+    output_path.write_bytes(rendered)
     return output_path
 
 

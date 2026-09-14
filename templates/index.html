@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>质量验收与缺陷分析报告生成器</title>
+    <title>Bug缺陷分享报告生成器</title>
     <style>
         body { margin: 0; font-family: "Microsoft YaHei", sans-serif; background: #f4f6fa; color: #333; }
         .wrap { max-width: 980px; margin: 40px auto; background: #fff; border-radius: 12px; box-shadow: 0 6px 24px rgba(0,0,0,0.08); overflow: hidden; }
@@ -42,7 +42,8 @@
 </head>
 <body>
     <div class="wrap">
-        <div class="header">质量验收与缺陷分析报告生成器（非测试用例）</div>
+        <div class="header">Bug缺陷分享报告生成器</div>
+        <div class="hint">报告将按正式测试报告结构生成，可直接使用 Word 或 WPS 打开和分享。</div>
         <div class="content">
             <div class="row">
                 <label for="project_name">项目名称</label>
@@ -86,12 +87,12 @@
                     </div>
                 </div>
             </div>
-            <button id="submit-btn" class="btn" type="button">生成质量验收报告（.doc）</button>
+            <button id="submit-btn" class="btn" type="button">生成 Bug 缺陷分享报告（.docx）</button>
             <div class="ver">版本：{{ app_version }}</div>
 
             <div id="ok-msg" class="msg ok hidden"></div>
             <div id="err-msg" class="msg err hidden"></div>
-            <a id="download-link" class="download hidden" href="#">点击下载报告（.doc）</a>
+            <a id="download-link" class="download hidden" href="#">点击下载报告（.docx）</a>
             <div id="output-path" class="path hidden"></div>
         </div>
     </div>

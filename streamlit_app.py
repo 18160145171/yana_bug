@@ -16,7 +16,7 @@ report_engine = importlib.reload(report_engine)
 from generate_bug_report import (  # noqa: E402
     DEFAULT_API_ENDPOINT,
     DEFAULT_REPORT_PROMPT,
-    build_html,
+    build_docx_bytes,
     load_rows,
     validate_columns,
 )
@@ -26,7 +26,7 @@ BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_DIR = BASE_DIR / "uploads"
 OUTPUT_DIR = BASE_DIR / "outputs"
 ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xls"}
-APP_VERSION = "2026.09.12-streamlit-waf-fix-r4"
+APP_VERSION = "2026.09.14-streamlit-docx-report-r5"
 
 
 def safe_filename(filename):
@@ -53,23 +53,24 @@ def generate_report(uploaded_file, project_name, llm_config):
     validate_columns(headers)
 
     report_project_name = project_name.strip() or Path(uploaded_file.name).stem
-    rendered = build_html(report_project_name, rows, llm_config=llm_config)
+    rendered = build_docx_bytes(report_project_name, rows, llm_config=llm_config)
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    output_name = f"质量验收与缺陷分析报告_{timestamp}.doc"
+    output_name = f"Bug缺陷分享报告_{timestamp}.docx"
     output_path = OUTPUT_DIR / output_name
-    output_path.write_text(rendered, encoding="utf-8")
+    output_path.write_bytes(rendered)
     return output_name, output_path, rendered
 
 
 st.set_page_config(
-    page_title="质量验收报告生成器",
+    page_title="Bug缺陷分享报告生成器",
     layout="centered",
     initial_sidebar_state="collapsed",
 )
 
-st.title("质量验收与缺陷分析报告生成器")
+st.title("Bug缺陷分享报告生成器")
 st.caption(f"版本：{APP_VERSION}")
+st.caption("报告将按正式测试报告结构生成：版本信息、分布统计、测试结论、优化建议和 Bug 明细。")
 
 project_name = st.text_input("项目名称", placeholder="例如：视频编辑器App")
 bug_file = st.file_uploader(
@@ -111,7 +112,7 @@ if use_ai:
     )
 
 with st.form("report-form"):
-    submitted = st.form_submit_button("生成质量验收报告")
+    submitted = st.form_submit_button("生成 Bug 缺陷分享报告")
 
 if submitted:
     if bug_file is None:
@@ -146,11 +147,11 @@ if submitted:
             except Exception as exc:  # pylint: disable=broad-except
                 st.error(f"生成失败：{exc}")
             else:
-                st.success("报告生成成功，AI 接口调用成功。")
+                st.success("报告生成成功，已生成正式 Word 测试报告。" if not use_ai else "报告生成成功，AI 接口调用成功。")
                 st.download_button(
-                    label="下载报告（.doc）",
-                    data=rendered.encode("utf-8"),
+                    label="下载报告（.docx）",
+                    data=rendered,
                     file_name=output_name,
-                    mime="application/msword",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 )
                 st.caption(f"云端临时保存路径：{output_path}")

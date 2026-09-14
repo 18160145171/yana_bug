@@ -10,7 +10,7 @@ from werkzeug.utils import secure_filename
 from generate_bug_report import (
     DEFAULT_API_ENDPOINT,
     DEFAULT_REPORT_PROMPT,
-    build_html,
+    build_docx_bytes,
     load_rows,
     validate_columns,
 )
@@ -19,7 +19,7 @@ BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_DIR = BASE_DIR / "uploads"
 OUTPUT_DIR = BASE_DIR / "outputs"
 ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xls"}
-APP_VERSION = "2026.09.12-api-endpoint-waf-fix-r4"
+APP_VERSION = "2026.09.14-docx-report-r5"
 
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -89,16 +89,20 @@ def api_generate():
                 "model_name": model_name,
                 "report_prompt": report_prompt,
             }
-        rendered = build_html(project_name, rows, llm_config=llm_config)
+        rendered = build_docx_bytes(project_name, rows, llm_config=llm_config)
 
-        out_name = f"质量验收与缺陷分析报告_{timestamp}.doc"
+        out_name = f"Bug缺陷分享报告_{timestamp}.docx"
         out_path = OUTPUT_DIR / out_name
-        out_path.write_text(rendered, encoding="utf-8")
+        out_path.write_bytes(rendered)
 
         return jsonify(
             {
                 "ok": True,
-                "message": "报告生成成功，AI 接口调用成功。" if use_ai else "报告生成成功。",
+                "message": (
+                    "报告生成成功，AI 接口调用成功。"
+                    if use_ai
+                    else "报告生成成功，已生成正式 Word 测试报告。"
+                ),
                 "download_link": url_for("download_file", filename=out_name),
                 "output_path": str(out_path),
             }
@@ -112,7 +116,12 @@ def download_file(filename):
     file_path = OUTPUT_DIR / filename
     if not file_path.exists():
         return redirect(url_for("index"))
-    return send_file(file_path, as_attachment=True, download_name=filename)
+    return send_file(
+        file_path,
+        as_attachment=True,
+        download_name=filename,
+        mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
 
 
 if __name__ == "__main__":
